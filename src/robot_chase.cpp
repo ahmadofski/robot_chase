@@ -9,6 +9,7 @@
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "rclcpp/callback_group.hpp"
+#include "rclcpp/logging.hpp"
 #include "rclcpp/publisher.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "tf2/exceptions.h"
@@ -24,8 +25,10 @@ public:
       : Node("robot_chaser") {
     this->kp_distance = kp_distance;
     this->kp_yaw = kp_yaw;
-    this->chaser_frame = chaser;
-    this->target_frame = target;
+    this->chaser_frame = chaser + "/base_link";
+    this->target_frame = target + "/base_link";
+
+    steady_clock = rclcpp::Clock();
 
     tf_cbg = this->create_callback_group(
         rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -39,7 +42,7 @@ public:
     publisher_ = this->create_publisher<geometry_msgs::msg::Twist>(
         chaser + "/cmd_vel", 100);
     tf_timer_ = this->create_wall_timer(
-        50ms, std::bind(&RobotChaser::tf_timer_callback, this),
+        20ms, std::bind(&RobotChaser::tf_timer_callback, this),
         tf_cbg); //!< 50hz timer for tf transform
     pub_timer_ = this->create_wall_timer(
         100ms, std::bind(&RobotChaser::pub_timer_callback, this),
@@ -54,14 +57,13 @@ private:
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   float error_distance, error_yaw, kp_distance, kp_yaw;
   std::string chaser_frame, target_frame;
+  rclcpp::Clock steady_clock;
 
   void tf_timer_callback() {
     geometry_msgs::msg::TransformStamped t;
 
-    // Look up for the transformation between target_frame and turtle2 frames
-    // and send velocity commands for turtle2 to reach target_frame
     try {
-      t = tf_buffer_->lookupTransform(this->target_frame, this->chaser_frame,
+      t = tf_buffer_->lookupTransform(this->chaser_frame, this->target_frame,
                                       tf2::TimePointZero);
     } catch (const tf2::TransformException &ex) {
       RCLCPP_INFO(this->get_logger(), "Could not transform %s to %s: %s",
@@ -80,13 +82,18 @@ private:
     msg.linear.x = this->error_distance * this->kp_distance;
     msg.angular.z = this->error_yaw * this->kp_yaw;
     this->publisher_->publish(msg);
+    RCLCPP_DEBUG_THROTTLE(this->get_logger(), this->steady_clock, 200,
+                          "TF Distance %2f Yaw %2f", this->error_distance,
+                          this->error_yaw);
   }
 };
 
 int main(int argc, char *argv[]) {
   rclcpp::init(argc, argv);
   std::shared_ptr<RobotChaser> node =
-      std::make_shared<RobotChaser>("rick", "morty", 0.5, 0.5);
+      std::make_shared<RobotChaser>("rick", "morty", 0.4, 0.4);
+  rcutils_logging_set_logger_level(node->get_logger().get_name(),
+                                   RCUTILS_LOG_SEVERITY_DEBUG);
   rclcpp::executors::MultiThreadedExecutor executor;
   executor.add_node(node);
   executor.spin();
